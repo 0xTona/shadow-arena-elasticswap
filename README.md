@@ -4,13 +4,13 @@ ElasticSwap is an Automated Market Maker (AMM) built to support elastic supply (
 
 ## Architecture
 
-| Contract | SLOC | Description |
-|----------|------|-------------|
+| Contract | Lines | Description |
+|----------|-------|-------------|
 | Exchange.sol | 326 | AMM pair contract. Handles addLiquidity, removeLiquidity, and swaps. Inherits ERC20 for LP tokens. |
-| ExchangeFactory.sol | 85 | Factory for deploying new Exchange pairs. Manages fee address. |
+| ExchangeFactory.sol | 84 | Factory for deploying new Exchange pairs. Manages fee address. |
 | MathLib.sol | 709 | Core math library. All AMM calculations: swap amounts, LP token minting, decay handling, fee calculation. |
 
-**Total in scope: ~1,120 SLOC across 3 contracts**
+**Total in scope: ~1,119 lines (~739 SLOC) across 3 contracts**
 
 ## Key Concepts
 

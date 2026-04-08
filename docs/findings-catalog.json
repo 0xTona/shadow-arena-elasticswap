@@ -62,7 +62,10 @@
     ],
     "affected_lines": [
       "MathLib.sol:493-512",
-      "MathLib.sol:204-212"
+      "MathLib.sol:204-212",
+      "Exchange.sol:87-156",
+      "Exchange.sol:168-250",
+      "Exchange.sol:260-287"
     ],
     "root_cause": "first-depositor-inflation",
     "description": "The first minter controls the initial X/Y ratio and total LP supply. Through a 7-step attack sequence combining addLiquidity, removeLiquidity, direct token transfers, swaps, and single-asset entry, an attacker can reduce LP totalSupply to 1 Wei while inflating the per-token value enormously. Once the per-token value is high enough, integer division in calculateLiquidityTokenQtyForDoubleAssetEntry truncates to 0 for any deposit below the inflated threshold.",
