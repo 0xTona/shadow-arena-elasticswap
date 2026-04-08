@@ -1,0 +1,76 @@
+[
+  {
+    "id": "H-01",
+    "title": "Single Asset Entry Formula Error Causes Fund Loss for New Liquidity Providers",
+    "severity": "High",
+    "affected_files": ["src/libraries/MathLib.sol"],
+    "affected_functions": [
+      "calculateAddQuoteTokenLiquidityQuantities",
+      "calculateAddBaseTokenLiquidityQuantities",
+      "calculateLiquidityTokenQtyForSingleAssetEntry"
+    ],
+    "affected_lines": [
+      "MathLib.sol:166-193",
+      "MathLib.sol:227-283",
+      "MathLib.sol:297-363"
+    ],
+    "root_cause": "incorrect-formula",
+    "description": "The formula for calculating gamma (the ratio of LP shares minted to new total supply) during single-asset liquidity entry is mathematically incorrect. The implementation computes gamma as DeltaY / Y' / 2 * (DeltaX / alphaDecay) but the correct derivation from the fundamental relationship Gamma = DeltaRo / (Ro + DeltaRo) produces a different formula. This means new LPs who add single-sided liquidity during decay receive fewer LP tokens than they should.",
+    "impact": "Direct fund loss for liquidity providers entering during decay. In a rebase-up scenario (base token supply goes from 1 to 10, adding 4 quoteToken), the new LP loses ~1.33 quoteToken equivalent. In a rebase-down scenario (base token supply goes from 10 to 1, adding 4 baseToken), the new LP loses ~2.67 quoteToken equivalent.",
+    "recommendation": "Correct the gamma formula derivation. For rebase-up (alpha decay): Gamma = (DeltaY * Omega) / (Alpha + Omega * Y'). For rebase-down (beta decay): derive the equivalent correct formula from the fundamental LP share relationship.",
+    "tier": "impressive",
+    "cfamm_connection": "moderate",
+    "educational_note": "This finding requires mathematical analysis beyond standard AMM knowledge. While Uniswap V2 uses simple proportional minting (liquidity = Math.min(amount0 * totalSupply / reserve0, amount1 * totalSupply / reserve1)), ElasticSwap introduces a novel single-asset entry mechanism for handling rebases. The gamma formula is unique to ElasticSwap. Spotting this requires deriving the correct formula independently and comparing it to the implementation. The key lesson: when a protocol introduces novel math, always rederive the formulas from first principles.",
+    "build_module_ref": "Section 5 (Pair: Adding Liquidity) covers LP token minting proportional math. This finding shows what happens when that math is extended incorrectly for a special case."
+  },
+  {
+    "id": "H-02",
+    "title": "Direct Token Transfer to Pool Inflates LP Denominator, Causing Fund Loss",
+    "severity": "High",
+    "affected_files": ["src/libraries/MathLib.sol"],
+    "affected_functions": [
+      "calculateAddTokenPairLiquidityQuantities",
+      "calculateLiquidityTokenQtyForDoubleAssetEntry"
+    ],
+    "affected_lines": [
+      "MathLib.sol:204-212",
+      "MathLib.sol:530-586"
+    ],
+    "root_cause": "external-balance-vs-internal-tracking",
+    "description": "LP token minting in double-asset entry uses the actual ERC20 balance of quoteToken (IERC20(quoteToken).balanceOf(address(this))) as the denominator instead of the internally tracked quoteTokenReserveQty. Since anyone can transfer quoteToken directly to the contract, an attacker can inflate the denominator, causing subsequent LPs to receive drastically fewer LP tokens for the same deposit.",
+    "impact": "An attacker who deposits 1e18 baseToken + 1e18 quoteToken, then donates 99e18 quoteToken directly to the contract, causes the next depositor adding 1e18 of each token to receive only ~0.02e18 baseToken back on withdrawal instead of 1e18. This is approximately a 98% fund loss for the victim. The attacker profits the difference.",
+    "recommendation": "Replace the external wallet balance with the internally tracked reserve in the LP minting calculation: use _internalBalances.quoteTokenReserveQty instead of the actual balanceOf.",
+    "tier": "must-find",
+    "cfamm_connection": "direct",
+    "educational_note": "This is the same class of vulnerability as the Uniswap V2 'donation attack' that MINIMUM_LIQUIDITY was designed to mitigate. In the Uniswap V2 build module, you learned that the pair tracks reserves separately from actual balances, and that _update() syncs them. ElasticSwap makes the same distinction (internalBalances vs actual balances) but then fails to use the internal value in one critical calculation. The lesson: whenever a protocol maintains internal accounting alongside actual token balances, every formula must be checked for which value it uses. If a formula uses actual balance, ask: can an attacker manipulate that balance directly?",
+    "build_module_ref": "Section 5 (mint) and Section 6 (burn) cover the reserves vs balances distinction. Section 3 (State and Initialization) introduces the reserve tracking pattern."
+  },
+  {
+    "id": "M-01",
+    "title": "First Minter LP Token Value Manipulation via Share Dilution",
+    "severity": "Medium",
+    "affected_files": [
+      "src/libraries/MathLib.sol",
+      "src/contracts/Exchange.sol"
+    ],
+    "affected_functions": [
+      "calculateAddLiquidityQuantities",
+      "calculateLiquidityTokenQtyForDoubleAssetEntry",
+      "addLiquidity",
+      "removeLiquidity",
+      "swapBaseTokenForQuoteToken"
+    ],
+    "affected_lines": [
+      "MathLib.sol:493-512",
+      "MathLib.sol:204-212"
+    ],
+    "root_cause": "first-depositor-inflation",
+    "description": "The first minter controls the initial X/Y ratio and total LP supply. Through a 7-step attack sequence combining addLiquidity, removeLiquidity, direct token transfers, swaps, and single-asset entry, an attacker can reduce LP totalSupply to 1 Wei while inflating the per-token value enormously. Once the per-token value is high enough, integer division in calculateLiquidityTokenQtyForDoubleAssetEntry truncates to 0 for any deposit below the inflated threshold.",
+    "impact": "The pool becomes a trap. Any deposit below the inflated threshold yields 0 LP tokens due to rounding. The attacker's single remaining LP Wei captures all deposited value. This is the classic 'first depositor' or 'vault inflation' attack applied to an AMM context.",
+    "recommendation": "Require a minimum initial LP amount and lock a portion of the first minter's LP tokens by minting them to the factory address (similar to Uniswap V2's MINIMUM_LIQUIDITY of 1000 Wei permanently locked to address(0)).",
+    "tier": "must-find",
+    "cfamm_connection": "direct",
+    "educational_note": "In the Uniswap V2 build module (Section 5: mint), you implemented MINIMUM_LIQUIDITY. You learned that the first depositor gets sqrt(amount0 * amount1) - MINIMUM_LIQUIDITY LP tokens, and MINIMUM_LIQUIDITY is minted to address(0) permanently. This exists precisely to prevent the attack described in this finding. ElasticSwap omitted this protection. The lesson: MINIMUM_LIQUIDITY is not optional or cosmetic. It is a critical defense against share inflation attacks. When reviewing any AMM or vault, always check: what happens when totalSupply is 1 Wei and reserves are large?",
+    "build_module_ref": "Section 5 (Pair: Adding Liquidity) covers MINIMUM_LIQUIDITY. The explanation section describes exactly why it exists: to prevent share inflation attacks on the first deposit."
+  }
+]

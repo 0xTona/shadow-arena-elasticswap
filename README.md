@@ -1,62 +1,45 @@
-# ElasticSwap contest details
-- $42,500 USDC main award pot
-- $2,500 USDC gas optimization award pot
-- Join [C4 Discord](https://discord.gg/code4rena) to register
-- Submit findings [using the C4 form](https://code4rena.com/contests/2022-01-elasticswap-contest/submit)
-- [Read our guidelines for more details](https://docs.code4rena.com/roles/wardens)
-- Starts January 20, 2022 00:00 UTC
-- Ends January 26, 2022 23:59 UTC
+# ElasticSwap
 
-# Overview
-ElasticSwap is the first Automated Market Maker (AMM) built explicitly to support elastic supply tokens. Our goal is to provide
-a familiar AMM experience to users that supports the many newly released rebasing tokens.  Previous AMMs, like Uniswap have
-not provided workable solutions to rebasing token or have even advised protocols from creating them. 
+ElasticSwap is an Automated Market Maker (AMM) built to support elastic supply (rebasing) tokens. It uses the constant product formula `x * y = k` at its core, extended with a novel mathematical model for handling supply changes in the base token.
 
-For example the Uniswap [V2 Docs](https://docs.uniswap.org/protocol/V2/reference/smart-contracts/common-errors#rebasing-tokens) have this warning:
+## Architecture
 
->While positive rebalancing does not break any functionality of Uniswap, those interested in them should be aware that the positive balance found in any pair will be freely available for taking.
+| Contract | SLOC | Description |
+|----------|------|-------------|
+| Exchange.sol | 326 | AMM pair contract. Handles addLiquidity, removeLiquidity, and swaps. Inherits ERC20 for LP tokens. |
+| ExchangeFactory.sol | 85 | Factory for deploying new Exchange pairs. Manages fee address. |
+| MathLib.sol | 709 | Core math library. All AMM calculations: swap amounts, LP token minting, decay handling, fee calculation. |
 
-While supplying liquidity in a Uniswap V2 pool, liquidity providers are losing out on any rebasing that occurs and leaving it up for grabs for anyone.
+**Total in scope: ~1,120 SLOC across 3 contracts**
 
-We have solved this problem, allowing liquidity providers to receive their expected rebases while still providing liquidity in our pools. 
+## Key Concepts
 
-# Contracts
+**Base Token** vs **Quote Token**: Each Exchange pair has a base token (which may rebase/change supply) and a quote token (fixed supply, e.g., WETH or a stablecoin).
 
-| Contract | SLOC | External Contracts Called | Libraries Used|
-|----------|------|---------------------------|---------------|
-| Exchange.sol | 326 | ERC20.sol | MathLib.sol, OpenZeppelin |
-| ExchangeFactory.sol | 85 | NA | OpenZeppelin |
-| MathLib.sol | 709 | NA | NA |
+**Decay**: When the base token rebases (supply increases or decreases), the actual balance held by the Exchange diverges from its internally tracked reserves. This imbalance is called "decay." ElasticSwap's novel contribution is handling this decay so LPs receive their expected rebase while still providing liquidity.
 
-#### Important Notes:
+**Internal Balances**: The Exchange tracks `baseTokenReserveQty`, `quoteTokenReserveQty`, and `kLast` internally. These may differ from actual ERC20 balances due to rebases. The AMM pricing curve operates on internal balances, while actual balances reflect the true token holdings.
 
- - **All source code in src/contracts/mocks is explicitly out of scope and is used for testing only**
+**Single Asset Entry**: When decay is present (after a rebase), LPs can add liquidity with only one token to resolve the imbalance. This is a special liquidity provision mode not found in standard AMMs.
 
- - **Fee on Transfer Tokens are NOT supported in our current implementation**
+**Double Asset Entry**: Standard two-sided liquidity provision (same as Uniswap V2), used when no decay is present.
 
-## Protocol Vocabulary
+## Fee Structure
 
-**Exchange** - a single instance of our amm that represents a `Base Token` and `Quote Token` Pair.
+- Total fee: 30 basis points (0.3%), same as Uniswap V2
+- 25 BP to liquidity providers, 5 BP to the DAO
+- DAO fee is collected as LP token minting (similar to Uniswap V2's protocol fee via sqrt(k) growth)
 
-**Base Token** - an arbitrary ERC20 token that may be a token with elastic supply / rebases. (think sOHM, sKLIMA, etc)
+## Running Tests
 
-**Quote Token** - an arbitrary ERC20 token that should be a token that does not rebase / has fixed supply.
+```bash
+cd elasticswap
+npm install
+npx hardhat test
+```
 
-**Decay** - the result of the imbalance in tokens that occurs immediately after a rebase occurs in the `Base Token`. See our math document below for more information on this important concept. 
+## Scope Notes
 
-
-# ElasticSwap Math
-
-Our novel AMM approach is made possible by a mathematical model that ensures equality among all liquidity providers in the light of
-tokens that do not have a fixed supply. The math that allows for this functionality is outlined in this [document](https://github.com/ElasticSwap/elasticswap/blob/develop/ElasticSwapMath.md). Please review the examples in this document to understand the math around how our unique AMM works.
-
-# Running Tests
-We have developed this protocol using HardHat and there is extensive test coverage that should
-help Wardens understand functionality and also probe at potential issues.
-
-To run tests please see instructions in the README.md inside of ./elasticswap
-
-
-# Areas of concern
-1. Price manipulation - Like most AMMs we utilize the constant product formula of `x*y=k`. Any ability to execute a swap that doesn't occur along this curve would be obviously problematic and something we would ask Wardens to spend extra time considering
-1. Fair distribution of LP tokens - Our AMMs allows for single sided liquidity to be added in the presence of decay.  When this occurs, LPers are provided LP tokens that represent their share of the pool.  If they were to immediately exit after providing single sided liquidity, they would still be issued both tokens upon exit. We have worked through several scenarios there with the math and believe it always comes out to a "fair" outcome for all liquidity providers.  This would be a great area to double check our thinking on and ensure that this cannot be manipulated or gamed. Also worth considering is when LPers are exiting from their positions when decay is present in the system as well. 
+- All source code in `src/contracts/mocks` is out of scope (testing only)
+- Fee-on-transfer tokens are NOT supported
+- The math model is documented in the [ElasticSwap Math document](https://github.com/ElasticSwap/elasticswap/blob/develop/ElasticSwapMath.md)
