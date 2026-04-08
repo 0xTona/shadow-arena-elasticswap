@@ -16,7 +16,9 @@ ElasticSwap is an Automated Market Maker (AMM) built to support elastic supply (
 
 **Base Token** vs **Quote Token**: Each Exchange pair has a base token (which may rebase/change supply) and a quote token (fixed supply, e.g., WETH or a stablecoin).
 
-**Decay**: When the base token rebases (supply increases or decreases), the actual balance held by the Exchange diverges from its internally tracked reserves. This imbalance is called "decay." ElasticSwap's novel contribution is handling this decay so LPs receive their expected rebase while still providing liquidity.
+**How Rebasing Works**: A rebase changes `balanceOf()` for all holders without emitting a transfer event. After a rebase, `IERC20(baseToken).balanceOf(address(this))` differs from the Exchange's internally tracked `baseTokenReserveQty`. The ratio between external balance and internal reserve is the rebase factor (referred to as "alpha" in the code). The internal base-to-quote ratio is "omega."
+
+**Decay**: The difference between external balance and internal reserve after a rebase. When base token supply increases ("rebase up"), external balance > internal reserve = "alpha decay." When supply decreases ("rebase down"), external balance < internal reserve = "beta decay." ElasticSwap's novel contribution is handling this decay so LPs receive their expected rebase while still providing liquidity.
 
 **Internal Balances**: The Exchange tracks `baseTokenReserveQty`, `quoteTokenReserveQty`, and `kLast` internally. These may differ from actual ERC20 balances due to rebases. The AMM pricing curve operates on internal balances, while actual balances reflect the true token holdings.
 
@@ -37,6 +39,16 @@ cd elasticswap
 npm install
 npx hardhat test
 ```
+
+## Reading Order
+
+Start with **Exchange.sol** (the pair contract, analogous to UniswapV2Pair). Follow calls into **MathLib.sol** for all calculation logic. ExchangeFactory.sol is simple and can be read last.
+
+## What to Look For
+
+- Where actual token balances vs internal reserves are used in formulas
+- What protections exist for the first depositor
+- How single-asset entry math differs from standard proportional minting
 
 ## Scope Notes
 
