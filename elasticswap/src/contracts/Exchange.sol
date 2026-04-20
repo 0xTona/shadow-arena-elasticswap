@@ -91,11 +91,26 @@ contract Exchange is ERC20, ReentrancyGuard {
         uint256 _quoteTokenQtyMin,
         address _liquidityTokenRecipient,
         uint256 _expirationTimestamp
-    ) external nonReentrant() {
+    ) external nonReentrant {
+        //@note
+        //Intention
+        //  1) Guard: nonReentrant
+        //  2) Guard: check for expiration
+        //  3) Process: calculate quantities and fees
+        //      3.1) Handles "decay" resolution if internal and external balances differ (due to rebases)
+        //  4) Process: update inKLast
+        //  5) Push: mint outstanding fees to DAO fee address
+        //  6) Push: mint liquidity tokens to recipient
+        //  7) Pull: transfer base tokens from sender
+        //      7.1) Guard: revert if Fee-on-Transfer detected on first deposit
+        //  8) Pull: transfer quote tokens from sender
+
+        //2
         isNotExpired(_expirationTimestamp);
 
-        MathLib.TokenQtys memory tokenQtys =
-            MathLib.calculateAddLiquidityQuantities(
+        //3
+        MathLib.TokenQtys memory tokenQtys = MathLib
+            .calculateAddLiquidityQuantities(
                 _baseTokenQtyDesired,
                 _quoteTokenQtyDesired,
                 _baseTokenQtyMin,
@@ -106,10 +121,12 @@ contract Exchange is ERC20, ReentrancyGuard {
                 internalBalances
             );
 
+        //4
         internalBalances.kLast =
             internalBalances.baseTokenReserveQty *
             internalBalances.quoteTokenReserveQty;
 
+        //5
         if (tokenQtys.liquidityTokenFeeQty > 0) {
             // mint liquidity tokens to fee address for k growth.
             _mint(
@@ -117,11 +134,14 @@ contract Exchange is ERC20, ReentrancyGuard {
                 tokenQtys.liquidityTokenFeeQty
             );
         }
+
+        //6
         _mint(_liquidityTokenRecipient, tokenQtys.liquidityTokenQty); // mint liquidity tokens to recipient
 
+        //7 {
         if (tokenQtys.baseTokenQty != 0) {
-            bool isExchangeEmpty =
-                IERC20(baseToken).balanceOf(address(this)) == 0;
+            bool isExchangeEmpty = IERC20(baseToken).balanceOf(address(this)) ==
+                0;
 
             // transfer base tokens to Exchange
             IERC20(baseToken).safeTransferFrom(
@@ -138,7 +158,9 @@ contract Exchange is ERC20, ReentrancyGuard {
                 );
             }
         }
+        //} 7
 
+        //8 {
         if (tokenQtys.quoteTokenQty != 0) {
             // transfer quote tokens to Exchange
             IERC20(quoteToken).safeTransferFrom(
@@ -147,6 +169,7 @@ contract Exchange is ERC20, ReentrancyGuard {
                 tokenQtys.quoteTokenQty
             );
         }
+        //} 8
 
         emit AddLiquidity(
             msg.sender,
@@ -171,77 +194,114 @@ contract Exchange is ERC20, ReentrancyGuard {
         uint256 _quoteTokenQtyMin,
         address _tokenRecipient,
         uint256 _expirationTimestamp
-    ) external nonReentrant() {
+    ) external nonReentrant {
+        //@note
+        //Intention
+        //  1) Guard: nonReentrant
+        //  2) Guard: check for expiration
+        //  3) Guard: check for initialized pool and valid minimums
+        //  4) Process: calculate DAO fees and proportional external quantities to return
+        //      4.1) Include pending fee
+        //  5) Guard: verify output quantities meet slippage minimums
+        //  6) Process: update internal reserves and kLast
+        //      6.1) baseToken internal removal is proportional to internal reserves
+        //      6.2) quoteToken internal removal matches external removal
+        //      6.3) update kLast
+        //  7) mint fees to DAO
+        //  8) burn liquidity tokens from sender
+        //  9) push base and quote tokens to recipient
+
+        //2
         isNotExpired(_expirationTimestamp);
+
+        //3 {
         require(this.totalSupply() > 0, "Exchange: INSUFFICIENT_LIQUIDITY");
         require(
             _baseTokenQtyMin > 0 && _quoteTokenQtyMin > 0,
             "Exchange: MINS_MUST_BE_GREATER_THAN_ZERO"
         );
+        //} 3
 
-        uint256 baseTokenReserveQty =
-            IERC20(baseToken).balanceOf(address(this));
-        uint256 quoteTokenReserveQty =
-            IERC20(quoteToken).balanceOf(address(this));
+        //4 {
+        uint256 baseTokenReserveQty = IERC20(baseToken).balanceOf(
+            address(this)
+        );
+        uint256 quoteTokenReserveQty = IERC20(quoteToken).balanceOf(
+            address(this)
+        );
 
+        //4.1 {
         uint256 totalSupplyOfLiquidityTokens = this.totalSupply();
         // calculate any DAO fees here.
-        uint256 liquidityTokenFeeQty =
-            MathLib.calculateLiquidityTokenFees(
-                totalSupplyOfLiquidityTokens,
-                internalBalances
-            );
-
+        uint256 liquidityTokenFeeQty = MathLib.calculateLiquidityTokenFees(
+            totalSupplyOfLiquidityTokens,
+            internalBalances
+        );
         // we need to factor this quantity in to any total supply before redemption
         totalSupplyOfLiquidityTokens += liquidityTokenFeeQty;
+        //} 4.1
 
-        uint256 baseTokenQtyToReturn =
-            (_liquidityTokenQty * baseTokenReserveQty) /
-                totalSupplyOfLiquidityTokens;
-        uint256 quoteTokenQtyToReturn =
-            (_liquidityTokenQty * quoteTokenReserveQty) /
-                totalSupplyOfLiquidityTokens;
+        uint256 baseTokenQtyToReturn = (_liquidityTokenQty *
+            baseTokenReserveQty) / totalSupplyOfLiquidityTokens;
+        uint256 quoteTokenQtyToReturn = (_liquidityTokenQty *
+            quoteTokenReserveQty) / totalSupplyOfLiquidityTokens;
+        //} 4
 
+        //5 {
         require(
             baseTokenQtyToReturn >= _baseTokenQtyMin,
             "Exchange: INSUFFICIENT_BASE_QTY"
         );
-
         require(
             quoteTokenQtyToReturn >= _quoteTokenQtyMin,
             "Exchange: INSUFFICIENT_QUOTE_QTY"
         );
+        //} 5
 
+        //6 {
         // this ensure that we are removing the equivalent amount of decay
         // when this person exits.
-        uint256 baseTokenQtyToRemoveFromInternalAccounting =
-            (_liquidityTokenQty * internalBalances.baseTokenReserveQty) /
+        //6.1 {
+        uint256 baseTokenQtyToRemoveFromInternalAccounting = (_liquidityTokenQty *
+                internalBalances.baseTokenReserveQty) /
                 totalSupplyOfLiquidityTokens;
 
         internalBalances
             .baseTokenReserveQty -= baseTokenQtyToRemoveFromInternalAccounting;
+        //} 6.1
 
+        //6.2 {
         // We should ensure no possible overflow here.
         if (quoteTokenQtyToReturn > internalBalances.quoteTokenReserveQty) {
             internalBalances.quoteTokenReserveQty = 0;
         } else {
             internalBalances.quoteTokenReserveQty -= quoteTokenQtyToReturn;
         }
+        //} 6.2
 
+        //6.3
         internalBalances.kLast =
             internalBalances.baseTokenReserveQty *
             internalBalances.quoteTokenReserveQty;
+        //} 6
 
+        //7 {
         if (liquidityTokenFeeQty > 0) {
             _mint(
                 IExchangeFactory(exchangeFactoryAddress).feeAddress(),
                 liquidityTokenFeeQty
             );
         }
+        //} 7
 
+        //8
         _burn(msg.sender, _liquidityTokenQty);
+
+        //9 {
         IERC20(baseToken).safeTransfer(_tokenRecipient, baseTokenQtyToReturn);
         IERC20(quoteToken).safeTransfer(_tokenRecipient, quoteTokenQtyToReturn);
+        //} 9
+
         emit RemoveLiquidity(
             msg.sender,
             baseTokenQtyToReturn,
@@ -261,27 +321,39 @@ contract Exchange is ERC20, ReentrancyGuard {
         uint256 _baseTokenQty,
         uint256 _minQuoteTokenQty,
         uint256 _expirationTimestamp
-    ) external nonReentrant() {
+    ) external nonReentrant {
+        //@note
+        //Intention
+        //  1) Guard: nonReentrant
+        //  2) Guard: check for expiration and positive quantities
+        //  3) Process: calculate swap output and update internal balances
+        //  4) Pull: base tokens from sender
+        //  5) Push: quote tokens to sender
+
+        //2 {
         isNotExpired(_expirationTimestamp);
         require(
             _baseTokenQty > 0 && _minQuoteTokenQty > 0,
             "Exchange: INSUFFICIENT_TOKEN_QTY"
         );
+        //} 2
 
-        uint256 quoteTokenQty =
-            MathLib.calculateQuoteTokenQty(
-                _baseTokenQty,
-                _minQuoteTokenQty,
-                TOTAL_LIQUIDITY_FEE,
-                internalBalances
-            );
+        //3
+        uint256 quoteTokenQty = MathLib.calculateQuoteTokenQty(
+            _baseTokenQty,
+            _minQuoteTokenQty,
+            TOTAL_LIQUIDITY_FEE,
+            internalBalances
+        );
 
+        //4
         IERC20(baseToken).safeTransferFrom(
             msg.sender,
             address(this),
             _baseTokenQty
         );
 
+        //5
         IERC20(quoteToken).safeTransfer(msg.sender, quoteTokenQty);
         emit Swap(msg.sender, _baseTokenQty, 0, 0, quoteTokenQty);
     }
@@ -298,28 +370,41 @@ contract Exchange is ERC20, ReentrancyGuard {
         uint256 _quoteTokenQty,
         uint256 _minBaseTokenQty,
         uint256 _expirationTimestamp
-    ) external nonReentrant() {
+    ) external nonReentrant {
+        //@note
+        //Intention
+        //  1) Guard: nonReentrant
+        //  2) Guard: check for expiration and positive quantities
+        //  3) Process: calculate swap output and update internal balances
+        //      3.1) Handles external balance mismatch (decay) if base token supply decreased
+        //  4) Pull: quote tokens from sender
+        //  5) Push: base tokens to sender
+
+        //2 {
         isNotExpired(_expirationTimestamp);
         require(
             _quoteTokenQty > 0 && _minBaseTokenQty > 0,
             "Exchange: INSUFFICIENT_TOKEN_QTY"
         );
+        //} 2
 
-        uint256 baseTokenQty =
-            MathLib.calculateBaseTokenQty(
-                _quoteTokenQty,
-                _minBaseTokenQty,
-                IERC20(baseToken).balanceOf(address(this)),
-                TOTAL_LIQUIDITY_FEE,
-                internalBalances
-            );
+        //3
+        uint256 baseTokenQty = MathLib.calculateBaseTokenQty(
+            _quoteTokenQty,
+            _minBaseTokenQty,
+            IERC20(baseToken).balanceOf(address(this)),
+            TOTAL_LIQUIDITY_FEE,
+            internalBalances
+        );
 
+        //4
         IERC20(quoteToken).safeTransferFrom(
             msg.sender,
             address(this),
             _quoteTokenQty
         );
 
+        //5
         IERC20(baseToken).safeTransfer(msg.sender, baseTokenQty);
         emit Swap(msg.sender, 0, _quoteTokenQty, baseTokenQty, 0);
     }
